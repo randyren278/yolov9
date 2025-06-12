@@ -69,22 +69,7 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
-    # Right after model loading (around line 68), add this:
     model.eval()  # Make sure model is in evaluation mode
-
-    # And in the inference section, modify the forward pass:
-    with torch.no_grad():
-        pred = model(im, augment=augment, visualize=visualize)
-        
-        # Handle YOLOv9 specific output format
-        if isinstance(pred, tuple) or isinstance(pred, list):
-            # YOLOv9 might return (predictions, auxiliary_outputs)
-            # During inference, we only want the main predictions
-            pred = pred[0] if len(pred) > 0 else pred
-        
-        # Ensure we have a tensor
-        while isinstance(pred, list) and len(pred) > 0:
-            pred = pred[0]
 
     # Dataloader
     bs = 1  # batch_size
@@ -113,9 +98,21 @@ def run(
         with dt[1]:
             visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
             pred = model(im, augment=augment, visualize=visualize)
-            # Fix: YOLOv9 may return a list (e.g. [aux_output, final_output])
-            if isinstance(pred, list):
-                pred = pred[-1]
+            # Robustly extract the tensor from nested list/tuple outputs
+            if isinstance(pred, (list, tuple)):
+                def extract_tensor(x):
+                    if isinstance(x, torch.Tensor):
+                        return x
+                    if isinstance(x, (list, tuple)):
+                        for y in x:
+                            t = extract_tensor(y)
+                            if t is not None:
+                                return t
+                    return None
+                pred_tensor = extract_tensor(pred)
+                if pred_tensor is None:
+                    raise RuntimeError("Could not extract tensor from model output")
+                pred = pred_tensor
 
         # Before the non_max_suppression call, add:
                 # Add debugging (you already have this)
@@ -141,8 +138,6 @@ def run(
                 pred = pred[-1] if pred else pred[0]
 
         print(f"Final pred type: {type(pred)}")
-
-        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
 
 
         # NMS
