@@ -69,6 +69,23 @@ def run(
     stride, names, pt = model.stride, model.names, model.pt
     imgsz = check_img_size(imgsz, s=stride)  # check image size
 
+    # Right after model loading (around line 68), add this:
+    model.eval()  # Make sure model is in evaluation mode
+
+    # And in the inference section, modify the forward pass:
+    with torch.no_grad():
+        pred = model(im, augment=augment, visualize=visualize)
+        
+        # Handle YOLOv9 specific output format
+        if isinstance(pred, tuple) or isinstance(pred, list):
+            # YOLOv9 might return (predictions, auxiliary_outputs)
+            # During inference, we only want the main predictions
+            pred = pred[0] if len(pred) > 0 else pred
+        
+        # Ensure we have a tensor
+        while isinstance(pred, list) and len(pred) > 0:
+            pred = pred[0]
+
     # Dataloader
     bs = 1  # batch_size
     if webcam:
@@ -96,6 +113,37 @@ def run(
         with dt[1]:
             visualize = increment_path(save_dir / Path(path).stem, mkdir=True) if visualize else False
             pred = model(im, augment=augment, visualize=visualize)
+            # Fix: YOLOv9 may return a list (e.g. [aux_output, final_output])
+            if isinstance(pred, list):
+                pred = pred[-1]
+
+        # Before the non_max_suppression call, add:
+                # Add debugging (you already have this)
+        print(f"pred type: {type(pred)}")
+        print(f"pred length: {len(pred) if isinstance(pred, list) else 'N/A'}")
+        if isinstance(pred, list) and len(pred) > 0:
+            print(f"pred[0] type: {type(pred[0])}")
+
+        # FIX: Handle nested list structure
+        if isinstance(pred, list):
+            # YOLOv9 often returns [main_output, aux_output] during inference
+            # We want the main output (usually the first or last element)
+            for i, p in enumerate(pred):
+                print(f"pred[{i}] type: {type(p)}")
+                if hasattr(p, 'device'):  # This should be a tensor
+                    pred = p
+                    print(f"Using pred[{i}] as main prediction")
+                    break
+            
+            # If still a list, try converting or extracting
+            if isinstance(pred, list):
+                # Try the last element (often the main prediction in YOLOv9)
+                pred = pred[-1] if pred else pred[0]
+
+        print(f"Final pred type: {type(pred)}")
+
+        pred = non_max_suppression(pred, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
+
 
         # NMS
         with dt[2]:
